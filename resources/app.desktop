@@ -1,11 +1,11 @@
 [Desktop Entry]
-Name={{ project-name | title_case }}
-Comment={{ description }}
+Name=Now Playing
+Comment=Now Playing applet for COSMIC Desktop
 Type=Application
-Icon={{ appid }}
-Exec={{ project-name }} %F
+Icon=io.github.cosmic-applet-now-playing
+Exec=cosmic-applet-now-playing %F
 Terminal=false
 StartupNotify=true
 Categories=COSMIC
-Keywords=COSMIC
+Keywords=COSMIC;music;media;now playing;applet
 MimeType=
