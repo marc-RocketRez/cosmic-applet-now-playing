@@ -3,12 +3,13 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use cosmic::app::Task;
+use cosmic::app::{Core, Task};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::{window::Id, Limits, Subscription};
-use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
-use cosmic::prelude::*;
+use cosmic::iced::window::Id;
+use cosmic::iced::{Alignment, Length, Limits, Subscription};
+use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::widget;
+use cosmic::Element;
 use mpris::PlaybackStatus;
 
 use crate::config::Config;
@@ -19,7 +20,7 @@ static PANEL_AUTOSIZE_ID: LazyLock<widget::Id> =
 
 #[derive(Default)]
 pub struct AppModel {
-    core: cosmic::Core,
+    core: Core,
     popup: Option<Id>,
     config: Config,
     player: PlayerInfo,
@@ -32,8 +33,8 @@ pub enum Message {
     TogglePopup,
     PopupClosed(Id),
     UpdateConfig(Config),
+    Surface(cosmic::surface::Action),
     Tick,
-    LoadArt(String),
     ArtLoaded(Option<cosmic::iced::widget::image::Handle>),
     PlayPause,
     Next,
@@ -48,15 +49,15 @@ impl cosmic::Application for AppModel {
 
     const APP_ID: &'static str = "io.github.cosmic-applet-now-playing";
 
-    fn core(&self) -> &cosmic::Core {
+    fn core(&self) -> &Core {
         &self.core
     }
 
-    fn core_mut(&mut self) -> &mut cosmic::Core {
+    fn core_mut(&mut self) -> &mut Core {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, _flags: ()) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
         let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
             .map(|ctx| match Config::get_entry(&ctx) {
                 Ok(cfg) => cfg,
@@ -87,21 +88,24 @@ impl cosmic::Application for AppModel {
             };
             let label = truncate_label(&label_str, max_len);
 
-            let mut row = widget::row()
-                .spacing(6)
-                .align_y(cosmic::iced::Alignment::Center);
+            let mut children: Vec<Element<'_, Message>> = Vec::new();
 
             if let Some(ref handle) = self.album_art {
-                row = row.push(
+                children.push(
                     widget::image(handle.clone())
-                        .width(cosmic::iced::Length::Fixed(thumb_size as f32))
-                        .height(cosmic::iced::Length::Fixed(thumb_size as f32))
-                        .content_fit(cosmic::iced::ContentFit::Cover),
+                        .width(Length::Fixed(thumb_size as f32))
+                        .height(Length::Fixed(thumb_size as f32))
+                        .content_fit(cosmic::iced::ContentFit::Cover)
+                        .into(),
                 );
             }
 
-            row = row.push(self.core.applet.text(label));
-            row.into()
+            children.push(self.core.applet.text(label).into());
+
+            widget::row(children)
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into()
         } else {
             widget::icon::from_name("media-playback-stop-symbolic")
                 .size(panel_size.0)
@@ -113,9 +117,9 @@ impl cosmic::Application for AppModel {
             widget::mouse_area(
                 widget::button::custom(
                     widget::container(button_content)
-                        .center_y(cosmic::iced::Length::Fixed(height)),
+                        .center_y(Length::Fixed(height)),
                 )
-                .height(cosmic::iced::Length::Fixed(height))
+                .height(Length::Fixed(height))
                 .class(cosmic::theme::Button::AppletIcon)
                 .on_press_down(Message::TogglePopup),
             )
@@ -133,96 +137,8 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
-        let cosmic::cosmic_theme::Spacing { space_s, space_m, .. } =
-            cosmic::theme::active().cosmic().spacing;
-
-        // Album art — 300×300 minimum
-        let art: Element<'_, Message> = if let Some(ref handle) = self.album_art {
-            widget::container(
-                widget::image(handle.clone())
-                    .width(cosmic::iced::Length::Fixed(300.0))
-                    .height(cosmic::iced::Length::Fixed(300.0))
-                    .content_fit(cosmic::iced::ContentFit::Cover),
-            )
-            .width(cosmic::iced::Length::Fill)
-            .align_x(cosmic::iced::alignment::Horizontal::Center)
-            .into()
-        } else {
-            widget::container(
-                widget::icon::from_name("audio-headphones-symbolic").size(96),
-            )
-            .width(cosmic::iced::Length::Fixed(300.0))
-            .height(cosmic::iced::Length::Fixed(300.0))
-            .align_x(cosmic::iced::alignment::Horizontal::Center)
-            .align_y(cosmic::iced::alignment::Vertical::Center)
-            .class(cosmic::theme::Container::Card)
-            .into()
-        };
-
-        // Track + artist
-        let track_info = widget::column()
-            .spacing(space_s)
-            .push(widget::text::title3(&self.player.title))
-            .push(widget::text::body(&self.player.artist))
-            .align_x(cosmic::iced::Alignment::Center)
-            .width(cosmic::iced::Length::Fill);
-
-        // Playback controls
-        let status_icon = match self.player.status {
-            PlaybackStatus::Playing => "media-playback-pause-symbolic",
-            _ => "media-playback-start-symbolic",
-        };
-
-        let controls = widget::row()
-            .spacing(space_m)
-            .align_y(cosmic::iced::Alignment::Center)
-            .push(
-                widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-                    .on_press(Message::Previous),
-            )
-            .push(
-                widget::button::icon(widget::icon::from_name(status_icon))
-                    .on_press(Message::PlayPause),
-            )
-            .push(
-                widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-                    .on_press(Message::Next),
-            );
-
-        // Panel label length setting
-        let label_spin = cosmic::widget::spin_button(
-            "Panel label length",
-            self.config.panel_label_max_length,
-            1u32,
-            10u32,
-            100u32,
-            Message::LabelMaxLengthChanged,
-        );
-
-        let content = widget::column()
-            .spacing(space_m)
-            .padding(space_m)
-            .push(art)
-            .push(track_info)
-            .push(
-                widget::container(controls)
-                    .width(cosmic::iced::Length::Fill)
-                    .align_x(cosmic::iced::alignment::Horizontal::Center),
-            )
-            .push(widget::divider::horizontal::default())
-            .push(label_spin);
-
-        self.core
-            .applet
-            .popup_container(content)
-            .limits(
-                Limits::NONE
-                    .min_width(320.0)
-                    .max_width(400.0)
-                    .min_height(200.0)
-                    .max_height(750.0),
-            )
-            .into()
+        // Popup is rendered via the app_popup closure in update(); this is a stub.
+        widget::text("").into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -234,28 +150,130 @@ impl cosmic::Application for AppModel {
         ])
     }
 
-    fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TogglePopup => {
-                return if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
+                if let Some(id) = self.popup.take() {
+                    return cosmic::task::message(cosmic::Action::Cosmic(
+                        cosmic::app::Action::Surface(destroy_popup(id)),
+                    ));
                 } else {
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    let mut settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    settings.positioner.size_limits = Limits::NONE
-                        .min_width(320.0)
-                        .max_width(400.0)
-                        .min_height(200.0)
-                        .max_height(750.0);
-                    get_popup(settings)
-                };
+                    return cosmic::task::message(cosmic::Action::Cosmic(
+                        cosmic::app::Action::Surface(app_popup::<AppModel>(
+                            |state: &mut AppModel| {
+                                let new_id = Id::unique();
+                                state.popup = Some(new_id);
+                                state.core.applet.get_popup_settings(
+                                    state.core.main_window_id().unwrap(),
+                                    new_id,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                            },
+                            Some(Box::new(|state: &AppModel| {
+                                let spacing = cosmic::theme::active().cosmic().spacing;
+                                let space_m: f32 = spacing.space_m.into();
+                                let space_s: f32 = spacing.space_s.into();
+
+                                let art: Element<'_, Message> =
+                                    if let Some(ref handle) = state.album_art {
+                                        widget::container(
+                                            widget::image(handle.clone())
+                                                .width(Length::Fixed(300.0))
+                                                .height(Length::Fixed(300.0))
+                                                .content_fit(cosmic::iced::ContentFit::Cover),
+                                        )
+                                        .width(Length::Fill)
+                                        .align_x(cosmic::iced::alignment::Horizontal::Center)
+                                        .into()
+                                    } else {
+                                        widget::container(
+                                            widget::icon::from_name(
+                                                "audio-headphones-symbolic",
+                                            )
+                                            .size(96),
+                                        )
+                                        .width(Length::Fixed(300.0))
+                                        .height(Length::Fixed(300.0))
+                                        .align_x(cosmic::iced::alignment::Horizontal::Center)
+                                        .align_y(cosmic::iced::alignment::Vertical::Center)
+                                        .class(cosmic::theme::Container::Card)
+                                        .into()
+                                    };
+
+                                let status_icon = match &state.player.status {
+                                    PlaybackStatus::Playing => "media-playback-pause-symbolic",
+                                    _ => "media-playback-start-symbolic",
+                                };
+
+                                let controls: Element<'_, Message> = widget::container(
+                                    widget::row(vec![
+                                        widget::button::icon(widget::icon::from_name(
+                                            "media-skip-backward-symbolic",
+                                        ))
+                                        .on_press(Message::Previous)
+                                        .into(),
+                                        widget::button::icon(widget::icon::from_name(status_icon))
+                                            .on_press(Message::PlayPause)
+                                            .into(),
+                                        widget::button::icon(widget::icon::from_name(
+                                            "media-skip-forward-symbolic",
+                                        ))
+                                        .on_press(Message::Next)
+                                        .into(),
+                                    ])
+                                    .spacing(space_m)
+                                    .align_y(Alignment::Center),
+                                )
+                                .width(Length::Fill)
+                                .align_x(cosmic::iced::alignment::Horizontal::Center)
+                                .into();
+
+                                let label_spin = cosmic::widget::spin_button(
+                                    "Panel label length",
+                                    state.config.panel_label_max_length,
+                                    1u32,
+                                    10u32,
+                                    100u32,
+                                    Message::LabelMaxLengthChanged,
+                                );
+
+                                let content = widget::column(vec![
+                                    art,
+                                    widget::text::title3(&state.player.title).into(),
+                                    widget::text::body(&state.player.artist).into(),
+                                    controls,
+                                    widget::divider::horizontal::default().into(),
+                                    label_spin.into(),
+                                ])
+                                .spacing(space_s)
+                                .padding(space_m);
+
+                                Element::from(
+                                    state
+                                        .core
+                                        .applet
+                                        .popup_container(content)
+                                        .limits(
+                                            Limits::NONE
+                                                .min_width(320.0)
+                                                .max_width(400.0)
+                                                .min_height(200.0)
+                                                .max_height(750.0),
+                                        ),
+                                )
+                                .map(cosmic::Action::App)
+                            })),
+                        )),
+                    ));
+                }
+            }
+
+            Message::Surface(a) => {
+                return cosmic::task::message(cosmic::Action::Cosmic(
+                    cosmic::app::Action::Surface(a),
+                ));
             }
 
             Message::PopupClosed(id) => {
@@ -285,13 +303,6 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::LoadArt(url) => {
-                return Task::perform(
-                    load_art(url),
-                    |handle| cosmic::Action::App(Message::ArtLoaded(handle)),
-                );
-            }
-
             Message::ArtLoaded(handle) => {
                 self.album_art = handle;
             }
@@ -319,7 +330,7 @@ impl cosmic::Application for AppModel {
         Task::none()
     }
 
-    fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
 }
@@ -328,7 +339,7 @@ fn truncate_label(s: &str, max_chars: usize) -> String {
     let mut chars = s.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() {
-        format!("{truncated}\u{2026}") // …
+        format!("{truncated}\u{2026}")
     } else {
         truncated
     }

@@ -49,7 +49,7 @@ pub fn get_active_player_info() -> PlayerInfo {
         .unwrap_or_default();
 
     let art_url = metadata.art_url().map(|u| u.to_string());
-    let bus_name = player.bus_name_player_name_part().to_string();
+    let bus_name = player.bus_name_trimmed().to_string();
 
     PlayerInfo { title, artist, status, art_url, bus_name }
 }
@@ -75,7 +75,7 @@ pub fn previous(bus_name: &str) {
 fn find_by_bus(bus_name: &str) -> anyhow::Result<mpris::Player> {
     let finder = PlayerFinder::new()?;
     for player in finder.find_all()? {
-        if player.bus_name_player_name_part() == bus_name {
+        if player.bus_name_trimmed() == bus_name {
             return Ok(player);
         }
     }
