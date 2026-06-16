@@ -434,8 +434,11 @@ impl cosmic::Application for AppModel {
                                     popup_children.push(picker);
                                 }
                                 popup_children.push(art);
+                                // title4 (a step down from title3) is less likely to
+                                // wrap to a second line, which would change the popup
+                                // height as songs switch.
                                 popup_children
-                                    .push(widget::text::title3(&state.player.title).into());
+                                    .push(widget::text::title4(&state.player.title).into());
                                 popup_children
                                     .push(widget::text::body(&state.player.artist).into());
                                 if !state.player.album.is_empty() {
