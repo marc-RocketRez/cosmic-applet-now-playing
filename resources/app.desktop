@@ -1,11 +1,12 @@
 [Desktop Entry]
 Name=Now Playing
-Comment=Now Playing applet for COSMIC Desktop
+Comment=Inline panel track info and controls via MPRIS
 Type=Application
-Icon=io.github.cosmic-applet-now-playing
-Exec=cosmic-applet-now-playing %F
+Icon=io.github.cosmic-applet-now-playing-symbolic
+Exec=cosmic-applet-now-playing
 Terminal=false
 StartupNotify=true
-Categories=COSMIC
-Keywords=COSMIC;music;media;now playing;applet
-MimeType=
+Categories=COSMIC;
+Keywords=COSMIC;Applet;Music;Media;MPRIS;Now Playing;
+NoDisplay=true
+X-CosmicApplet=true

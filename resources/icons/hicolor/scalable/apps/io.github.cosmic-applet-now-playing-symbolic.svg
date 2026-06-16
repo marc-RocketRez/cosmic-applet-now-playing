@@ -1,0 +1,21 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="applet-now-playing">
+  <!-- transparent hit area -->
+  <rect width="16" height="16" fill="#808080" fill-opacity="0.01"/>
+
+  <!-- eighth note -->
+
+  <!-- note head: filled tilted ellipse -->
+  <ellipse cx="5.5" cy="12.5" rx="3.2" ry="2" transform="rotate(-22 5.5 12.5)" fill="#232323"/>
+
+  <!-- stem -->
+  <rect x="8" y="3" width="1.5" height="10" fill="#232323"/>
+
+  <!-- flag: filled hook from top of stem -->
+  <path d="M9.5 3C13 3.5 14 7 11.5 9.5L10 8.5C12 6.5 11.5 5 9.5 4.5V3Z" fill="#232323"/>
+
+  <!-- soundwave arcs: two concentric arcs to the right of the note, secondary opacity -->
+  <path d="M12.5 6.5C13.5 7.5 13.5 9 12.5 10" stroke="#232323" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0.35"/>
+  <path d="M14 5.5C15.5 7 15.5 9.5 14 11" stroke="#232323" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0.35"/>
+</g>
+</svg>

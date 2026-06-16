@@ -1,6 +1,6 @@
-name := '{{ project-name }}'
-appid := '{{ appid }}'
-{% raw %}
+name := 'cosmic-applet-now-playing'
+appid := 'io.github.cosmic-applet-now-playing'
+
 rootdir := ''
 prefix := '/usr'
 
@@ -9,19 +9,11 @@ base-dir := absolute_path(clean(rootdir / prefix))
 bin-src := 'target' / 'release' / name
 bin-dst := base-dir / 'bin' / name
 
-desktop := appid + '.desktop'
-desktop-src := 'resources' / desktop
-desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / desktop
+desktop-dst := clean(rootdir / prefix) / 'share' / 'applications' / appid + '.desktop'
+appdata-dst := clean(rootdir / prefix) / 'share' / 'appdata' / appid + '.metainfo.xml'
 
-appdata := appid + '.metainfo.xml'
-appdata-src := 'resources' / appdata
-appdata-dst := clean(rootdir / prefix) / 'share' / 'appdata' / appdata
-
-icons-src := 'resources' / 'icons' / 'hicolor'
-icons-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor'
-
-icon-svg-src := icons-src / 'scalable' / 'apps' / 'icon.svg'
-icon-svg-dst := icons-dst / 'scalable' / 'apps' / appid + '.svg'
+icon-svg-src := 'resources' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '-symbolic.svg'
+icon-svg-dst := clean(rootdir / prefix) / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '-symbolic.svg'
 
 # Default recipe which runs `just build-release`
 default: build-release
@@ -64,10 +56,11 @@ install:
     install -Dm0644 resources/app.desktop {{desktop-dst}}
     install -Dm0644 resources/app.metainfo.xml {{appdata-dst}}
     install -Dm0644 {{icon-svg-src}} {{icon-svg-dst}}
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
 
 # Uninstalls installed files
 uninstall:
-    rm {{bin-dst}} {{desktop-dst}} {{icon-svg-dst}}
+    rm -f {{bin-dst}} {{desktop-dst}} {{icon-svg-dst}}
 
 # Vendor dependencies locally
 vendor:
@@ -93,4 +86,3 @@ vendor:
 vendor-extract:
     rm -rf vendor
     tar pxf vendor.tar
-{% endraw %}
