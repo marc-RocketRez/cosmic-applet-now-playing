@@ -14,7 +14,7 @@ use cosmic::Element;
 use mpris::PlaybackStatus;
 
 use crate::config::Config;
-use crate::mpris::PlayerInfo;
+use crate::mpris::{PlayerInfo, PlayerSummary, Poll};
 
 static PANEL_AUTOSIZE_ID: LazyLock<widget::Id> =
     LazyLock::new(|| widget::Id::new("now-playing-panel"));
@@ -37,6 +37,10 @@ pub struct AppModel {
     current_art_url: Option<String>,
     seeking: Option<f64>,
     missed_polls: u8,
+    /// All MPRIS players seen on the last poll, for the picker.
+    players: Vec<PlayerSummary>,
+    /// User-pinned player (trimmed bus name); `None` means auto-pick.
+    selected_player: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +49,8 @@ pub enum Message {
     PopupClosed(Id),
     UpdateConfig(Config),
     Tick,
-    PlayerUpdated(Option<crate::mpris::PlayerInfo>),
+    Polled(Poll),
+    SelectPlayer(String),
     ArtLoaded(Option<cosmic::iced::widget::image::Handle>),
     PlayPause,
     Next,
@@ -267,15 +272,28 @@ impl cosmic::Application for AppModel {
                                             ))
                                             .into(),
                                         ]);
-                                        let slider = widget::slider(
-                                            0.0..=state.player.length_us as f64,
-                                            seek_pos,
-                                            Message::SeekChanged,
-                                        )
-                                        .on_release(Message::SeekCommit)
-                                        .width(Length::Fill);
+                                        // Interactive slider when the player can
+                                        // seek; otherwise a read-only progress bar.
+                                        let bar: Element<'_, Message> = if state.player.can_seek {
+                                            widget::slider(
+                                                0.0..=state.player.length_us as f64,
+                                                seek_pos,
+                                                Message::SeekChanged,
+                                            )
+                                            .on_release(Message::SeekCommit)
+                                            .width(Length::Fill)
+                                            .into()
+                                        } else {
+                                            let frac = (seek_pos
+                                                / state.player.length_us as f64)
+                                                .clamp(0.0, 1.0)
+                                                as f32;
+                                            widget::container(widget::determinate_linear(frac))
+                                                .width(Length::Fill)
+                                                .into()
+                                        };
                                         widget::column(vec![
-                                            slider.into(),
+                                            bar,
                                             time_row.into(),
                                         ])
                                         .spacing(2.0)
@@ -284,34 +302,57 @@ impl cosmic::Application for AppModel {
                                         widget::Space::new().width(Length::Fill).into()
                                     };
 
+                                // Each transport button is only pressable when the
+                                // player advertises the matching capability.
+                                let mut control_row: Vec<Element<'_, Message>> = Vec::new();
+
+                                let mut prev = widget::button::icon(widget::icon::from_name(
+                                    "media-skip-backward-symbolic",
+                                ));
+                                if state.player.can_go_previous {
+                                    prev = prev.on_press(Message::Previous);
+                                }
+                                control_row.push(prev.into());
+
+                                let mut seek_back = widget::button::icon(widget::icon::from_name(
+                                    "media-seek-backward-symbolic",
+                                ));
+                                if state.player.can_seek {
+                                    seek_back = seek_back.on_press(Message::SeekBackward);
+                                }
+                                control_row.push(seek_back.into());
+
+                                let can_playpause = match state.player.status {
+                                    PlaybackStatus::Playing => state.player.can_pause,
+                                    _ => state.player.can_play,
+                                };
+                                let mut play_pause =
+                                    widget::button::icon(widget::icon::from_name(status_icon));
+                                if can_playpause {
+                                    play_pause = play_pause.on_press(Message::PlayPause);
+                                }
+                                control_row.push(play_pause.into());
+
+                                let mut seek_fwd = widget::button::icon(widget::icon::from_name(
+                                    "media-seek-forward-symbolic",
+                                ));
+                                if state.player.can_seek {
+                                    seek_fwd = seek_fwd.on_press(Message::SeekForward);
+                                }
+                                control_row.push(seek_fwd.into());
+
+                                let mut next = widget::button::icon(widget::icon::from_name(
+                                    "media-skip-forward-symbolic",
+                                ));
+                                if state.player.can_go_next {
+                                    next = next.on_press(Message::Next);
+                                }
+                                control_row.push(next.into());
+
                                 let controls: Element<'_, Message> = widget::container(
-                                    widget::row(vec![
-                                        widget::button::icon(widget::icon::from_name(
-                                            "media-skip-backward-symbolic",
-                                        ))
-                                        .on_press(Message::Previous)
-                                        .into(),
-                                        widget::button::icon(widget::icon::from_name(
-                                            "media-seek-backward-symbolic",
-                                        ))
-                                        .on_press(Message::SeekBackward)
-                                        .into(),
-                                        widget::button::icon(widget::icon::from_name(status_icon))
-                                            .on_press(Message::PlayPause)
-                                            .into(),
-                                        widget::button::icon(widget::icon::from_name(
-                                            "media-seek-forward-symbolic",
-                                        ))
-                                        .on_press(Message::SeekForward)
-                                        .into(),
-                                        widget::button::icon(widget::icon::from_name(
-                                            "media-skip-forward-symbolic",
-                                        ))
-                                        .on_press(Message::Next)
-                                        .into(),
-                                    ])
-                                    .spacing(space_m)
-                                    .align_y(Alignment::Center),
+                                    widget::row(control_row)
+                                        .spacing(space_s)
+                                        .align_y(Alignment::Center),
                                 )
                                 .width(Length::Fill)
                                 .align_x(cosmic::iced::alignment::Horizontal::Center)
@@ -329,6 +370,56 @@ impl cosmic::Application for AppModel {
                                     ),
                                 );
 
+                                // Player picker: one selectable row per available
+                                // player, shown only when there's a choice to make.
+                                let player_picker: Option<Element<'_, Message>> =
+                                    if state.players.len() > 1 {
+                                        let rows: Vec<Element<'_, Message>> = state
+                                            .players
+                                            .iter()
+                                            .map(|s| {
+                                                let is_current =
+                                                    s.bus_name == state.player.bus_name;
+                                                let status_icon = match s.status {
+                                                    PlaybackStatus::Playing => {
+                                                        "media-playback-start-symbolic"
+                                                    }
+                                                    PlaybackStatus::Paused => {
+                                                        "media-playback-pause-symbolic"
+                                                    }
+                                                    _ => "media-playback-stop-symbolic",
+                                                };
+                                                let label = if s.title.is_empty() {
+                                                    s.identity.clone()
+                                                } else {
+                                                    format!("{} \u{2014} {}", s.identity, s.title)
+                                                };
+                                                widget::button::custom(
+                                                    widget::row(vec![
+                                                        widget::icon::from_name(status_icon)
+                                                            .size(14)
+                                                            .into(),
+                                                        widget::text::body(truncate_label(
+                                                            &label, 42,
+                                                        ))
+                                                        .into(),
+                                                    ])
+                                                    .spacing(space_s)
+                                                    .align_y(Alignment::Center),
+                                                )
+                                                .selected(is_current)
+                                                .width(Length::Fill)
+                                                .on_press(Message::SelectPlayer(
+                                                    s.bus_name.clone(),
+                                                ))
+                                                .into()
+                                            })
+                                            .collect();
+                                        Some(widget::column(rows).spacing(2.0).into())
+                                    } else {
+                                        None
+                                    };
+
                                 let mut popup_children: Vec<Element<'_, Message>> = vec![
                                     label_spin.into(),
                                     widget::settings::item(
@@ -338,10 +429,15 @@ impl cosmic::Application for AppModel {
                                     )
                                     .into(),
                                     widget::divider::horizontal::default().into(),
-                                    art,
-                                    widget::text::title3(&state.player.title).into(),
-                                    widget::text::body(&state.player.artist).into(),
                                 ];
+                                if let Some(picker) = player_picker {
+                                    popup_children.push(picker);
+                                }
+                                popup_children.push(art);
+                                popup_children
+                                    .push(widget::text::title3(&state.player.title).into());
+                                popup_children
+                                    .push(widget::text::body(&state.player.artist).into());
                                 if !state.player.album.is_empty() {
                                     let album_str = if let Some(y) = state.player.year {
                                         format!("{} ({})", state.player.album, y)
@@ -388,41 +484,66 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Tick => {
+                let selected = self.selected_player.clone();
                 return Task::perform(
-                    async {
-                        tokio::task::spawn_blocking(crate::mpris::get_active_player_info)
-                            .await
-                            .ok()
-                            .flatten()
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            crate::mpris::poll(selected.as_deref())
+                        })
+                        .await
+                        .unwrap_or_default()
                     },
-                    |info| cosmic::Action::App(Message::PlayerUpdated(info)),
+                    |poll| cosmic::Action::App(Message::Polled(poll)),
                 );
             }
 
-            Message::PlayerUpdated(None) => {
-                // Transient lookup miss. Keep showing the last-known player for a
-                // few ticks; only clear once we're confident it's really gone.
-                if !self.player.bus_name.is_empty() {
-                    self.missed_polls = self.missed_polls.saturating_add(1);
-                    if self.missed_polls >= 4 {
-                        self.player = PlayerInfo::default();
-                        self.album_art = None;
-                        self.current_art_url = None;
-                        self.seeking = None;
-                    }
-                }
+            Message::SelectPlayer(bus_name) => {
+                // Pin the chosen player. Reset per-player UI state so we don't show
+                // the previous player's art/seek until the next poll lands.
+                self.selected_player = Some(bus_name);
+                self.album_art = None;
+                self.current_art_url = None;
+                self.seeking = None;
             }
 
-            Message::PlayerUpdated(Some(info)) => {
-                self.missed_polls = 0;
-                if info == self.player {
-                    return Task::none();
+            Message::Polled(poll) => {
+                self.players = poll.players;
+                // Drop a pinned selection whose player has disappeared, so we fall
+                // back to auto-pick rather than getting stuck on a dead player.
+                if let Some(sel) = &self.selected_player {
+                    if !self.players.iter().any(|p| &p.bus_name == sel) {
+                        self.selected_player = None;
+                    }
                 }
-                // Clear seek-pin once the player position is within 2s of the target.
+
+                let Some(info) = poll.player else {
+                    // Transient lookup miss. Keep the last-known player for a few
+                    // ticks; only clear once we're confident it's really gone.
+                    if !self.player.bus_name.is_empty() {
+                        self.missed_polls = self.missed_polls.saturating_add(1);
+                        if self.missed_polls >= 4 {
+                            self.player = PlayerInfo::default();
+                            self.album_art = None;
+                            self.current_art_url = None;
+                            self.seeking = None;
+                        }
+                    }
+                    return Task::none();
+                };
+
+                self.missed_polls = 0;
+
+                // Clear the seek-pin once the player position is within 2s of the
+                // target. This runs before the unchanged-state short-circuit below
+                // so it still fires for players that report identical state ticks.
                 if let Some(target) = self.seeking {
                     if (info.position_us as f64 - target).abs() < 2_000_000.0 {
                         self.seeking = None;
                     }
+                }
+
+                if info == self.player {
+                    return Task::none();
                 }
                 let new_art_url = info.art_url.clone();
                 self.player = info;
@@ -462,7 +583,7 @@ impl cosmic::Application for AppModel {
             Message::SeekCommit => {
                 if let Some(pos) = self.seeking {
                     // Keep `seeking` set — the slider stays pinned to the target
-                    // until PlayerUpdated confirms the position has caught up.
+                    // until the next poll confirms the position has caught up.
                     let target = pos as u64;
                     let bus_name = self.player.bus_name.clone();
                     let current = self.player.position_us;

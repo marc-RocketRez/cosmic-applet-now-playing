@@ -20,6 +20,11 @@ pub struct PlayerInfo {
     pub bus_name: String,
     pub position_us: u64,
     pub length_us: u64,
+    pub can_go_next: bool,
+    pub can_go_previous: bool,
+    pub can_pause: bool,
+    pub can_play: bool,
+    pub can_seek: bool,
 }
 
 impl Default for PlayerInfo {
@@ -34,30 +39,107 @@ impl Default for PlayerInfo {
             bus_name: String::new(),
             position_us: 0,
             length_us: 0,
+            can_go_next: false,
+            can_go_previous: false,
+            can_pause: false,
+            can_play: false,
+            can_seek: false,
         }
     }
 }
 
-/// Poll the active MPRIS player and return its current state.
-///
-/// Returns `None` when no player could be resolved this tick — either there
-/// genuinely is no player, or the lookup hit a transient D-Bus error (e.g. a
-/// sibling player erroring mid-iteration inside `find_active`). Callers should
-/// treat `None` as "no fresh data" rather than "stop playing", so a momentary
-/// failure doesn't blank the panel.
-pub fn get_active_player_info() -> Option<PlayerInfo> {
-    let finder = PlayerFinder::new().ok()?;
-    let player = find_active_real_player(&finder)?;
+/// A lightweight entry for the player picker: enough to label and identify each
+/// available MPRIS player without fetching its full state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerSummary {
+    pub bus_name: String,
+    pub identity: String,
+    pub status: PlaybackStatus,
+    pub title: String,
+}
 
+/// One poll tick's worth of state: the player whose info to display (honoring a
+/// pinned selection, else auto-picked) plus the list of all available players.
+#[derive(Debug, Clone, Default)]
+pub struct Poll {
+    pub player: Option<PlayerInfo>,
+    pub players: Vec<PlayerSummary>,
+}
+
+/// Poll MPRIS players once.
+///
+/// `selected` pins a specific player by trimmed bus name; if it's set and that
+/// player is present, its info is returned. Otherwise we auto-pick the most
+/// likely active player. `players` always lists every real player (excluding the
+/// `playerctld` proxy) so the UI can offer a picker.
+///
+/// `player` is `None` when no player resolved this tick (genuinely none, or a
+/// transient D-Bus error). Callers treat that as "no fresh data", not "stopped".
+pub fn poll(selected: Option<&str>) -> Poll {
+    let Ok(finder) = PlayerFinder::new() else { return Poll::default() };
+    let Ok(all) = finder.find_all() else { return Poll::default() };
+
+    // Drop the playerctld shadow proxy; it duplicates a real player.
+    let real: Vec<Player> = all
+        .into_iter()
+        .filter(|p| p.bus_name_trimmed() != PLAYERCTLD)
+        .collect();
+
+    let players: Vec<PlayerSummary> = real
+        .iter()
+        .map(|p| PlayerSummary {
+            bus_name: p.bus_name_trimmed().to_string(),
+            identity: p.identity().to_string(),
+            status: p.get_playback_status().unwrap_or(PlaybackStatus::Stopped),
+            title: p
+                .get_metadata()
+                .ok()
+                .and_then(|m| m.title().map(str::to_string))
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    // Honor a pinned selection if it's still present, else auto-pick.
+    let chosen = selected
+        .and_then(|bus| players.iter().position(|s| s.bus_name == bus))
+        .or_else(|| pick_active_index(&players));
+
+    let player = chosen.map(|i| player_info(&real[i]));
+
+    Poll { player, players }
+}
+
+/// Pick the index of the most likely active player from the summaries,
+/// mirroring the MPRIS convention: Playing > Paused > has-a-track > first.
+fn pick_active_index(players: &[PlayerSummary]) -> Option<usize> {
+    let mut first_paused = None;
+    let mut first_with_track = None;
+    let mut first_found = None;
+
+    for (i, s) in players.iter().enumerate() {
+        if s.status == PlaybackStatus::Playing {
+            return Some(i);
+        }
+        if first_paused.is_none() && s.status == PlaybackStatus::Paused {
+            first_paused = Some(i);
+        } else if first_with_track.is_none() && !s.title.is_empty() {
+            first_with_track = Some(i);
+        } else if first_found.is_none() {
+            first_found = Some(i);
+        }
+    }
+
+    first_paused.or(first_with_track).or(first_found)
+}
+
+/// Build the full `PlayerInfo` for one player (a batch of MPRIS property reads).
+fn player_info(player: &Player) -> PlayerInfo {
     let metadata = player.get_metadata().unwrap_or_default();
     let status = player
         .get_playback_status()
         .unwrap_or(PlaybackStatus::Stopped);
 
-    let title = metadata
-        .title()
-        .unwrap_or("Unknown")
-        .to_string();
+    let title = metadata.title().unwrap_or("Unknown").to_string();
 
     let artist = metadata
         .artists()
@@ -81,43 +163,16 @@ pub fn get_active_player_info() -> Option<PlayerInfo> {
     let bus_name = player.bus_name_trimmed().to_string();
     let position_us = player.get_position_in_microseconds().unwrap_or(0);
     let length_us = metadata.length_in_microseconds().unwrap_or(0);
+    let can_go_next = player.can_go_next().unwrap_or(false);
+    let can_go_previous = player.can_go_previous().unwrap_or(false);
+    let can_pause = player.can_pause().unwrap_or(false);
+    let can_play = player.can_play().unwrap_or(false);
+    let can_seek = player.can_seek().unwrap_or(false);
 
-    Some(PlayerInfo { title, artist, album, year, status, art_url, bus_name, position_us, length_us })
-}
-
-/// Pick the active player among real players, excluding the `playerctld` proxy.
-///
-/// Mirrors the crate's `find_active` ordering (Playing > Paused > has-metadata >
-/// first), but deterministically over the real players only, so we never flip to
-/// the shadow proxy and blank the panel. Returns `None` on transient D-Bus errors
-/// (treated by callers as "no fresh data", not "stopped").
-fn find_active_real_player(finder: &PlayerFinder) -> Option<Player> {
-    let players = finder.find_all().ok()?;
-
-    let mut first_paused: Option<Player> = None;
-    let mut first_with_track: Option<Player> = None;
-    let mut first_found: Option<Player> = None;
-
-    for player in players {
-        if player.bus_name_trimmed() == PLAYERCTLD {
-            continue;
-        }
-        let status = player.get_playback_status().unwrap_or(PlaybackStatus::Stopped);
-        if status == PlaybackStatus::Playing {
-            return Some(player);
-        }
-        if first_paused.is_none() && status == PlaybackStatus::Paused {
-            first_paused = Some(player);
-        } else if first_with_track.is_none()
-            && player.get_metadata().map(|m| !m.is_empty()).unwrap_or(false)
-        {
-            first_with_track = Some(player);
-        } else if first_found.is_none() {
-            first_found = Some(player);
-        }
+    PlayerInfo {
+        title, artist, album, year, status, art_url, bus_name, position_us, length_us,
+        can_go_next, can_go_previous, can_pause, can_play, can_seek,
     }
-
-    first_paused.or(first_with_track).or(first_found)
 }
 
 pub fn seek_by(bus_name: &str, offset_us: i64) {
