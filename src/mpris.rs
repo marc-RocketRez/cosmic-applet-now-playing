@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
+use std::cell::RefCell;
+
 use mpris::{PlaybackStatus, Player, PlayerFinder};
 
 /// `playerctld` is a proxy meta-player that mirrors whichever real player is
@@ -66,6 +68,13 @@ pub struct Poll {
     pub players: Vec<PlayerSummary>,
 }
 
+thread_local! {
+    /// A per-worker-thread cached `PlayerFinder` holding one long-lived D-Bus
+    /// connection. Opening a fresh connection on every poll (~2/sec) was never
+    /// reclaimed and ballooned the host cosmic-panel process by GBs over a session.
+    static FINDER: RefCell<Option<PlayerFinder>> = const { RefCell::new(None) };
+}
+
 /// Poll MPRIS players once.
 ///
 /// `selected` pins a specific player by trimmed bus name; if it's set and that
@@ -76,8 +85,7 @@ pub struct Poll {
 /// `player` is `None` when no player resolved this tick (genuinely none, or a
 /// transient D-Bus error). Callers treat that as "no fresh data", not "stopped".
 pub fn poll(selected: Option<&str>) -> Poll {
-    let Ok(finder) = PlayerFinder::new() else { return Poll::default() };
-    let Ok(all) = finder.find_all() else { return Poll::default() };
+    let Some(all) = find_all_players() else { return Poll::default() };
 
     // Drop the playerctld shadow proxy; it duplicates a real player.
     let real: Vec<Player> = all
@@ -107,6 +115,25 @@ pub fn poll(selected: Option<&str>) -> Poll {
     let player = chosen.map(|i| player_info(&real[i]));
 
     Poll { player, players }
+}
+
+/// Find all MPRIS players via the per-thread cached `PlayerFinder` (one reused
+/// D-Bus connection), recreating it if the cached connection has gone stale.
+fn find_all_players() -> Option<Vec<Player>> {
+    FINDER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = PlayerFinder::new().ok();
+        }
+        match slot.as_ref()?.find_all() {
+            Ok(players) => Some(players),
+            Err(_) => {
+                // The cached connection may be stale; drop it so the next poll reconnects.
+                *slot = None;
+                None
+            }
+        }
+    })
 }
 
 /// Pick the index of the most likely active player from the summaries,
