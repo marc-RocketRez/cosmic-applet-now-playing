@@ -12,6 +12,7 @@ vergen = { version = "8", features = ["git", "gitcl"] }
 anyhow = "1"
 cosmic-config = { git = "https://github.com/pop-os/libcosmic.git" }
 i18n-embed-fl = "0.9"
+image = "0.25"
 mpris = "2"
 reqwest = { version = "0.12", features = ["default-tls"] }
 rust-embed = "8"
